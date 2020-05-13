@@ -350,7 +350,7 @@ def FindFitCenter(image, mask, inParams={}):
             print('fit parameters do not have key ',inkey,', available are: ',params.keys())
             pass
 
-    print('now find edges')
+    print('now find edges, because')
     arThres,arSparse = applyCanny(ar, mask.astype(bool), sigma=params['sigma'], thres=params['low_threshold'], thresH=params['high_threshold'])
 
     print('use hough transform to find center & ring candidates')
