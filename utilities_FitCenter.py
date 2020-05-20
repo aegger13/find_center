@@ -9,7 +9,7 @@ from skimage.measure import (CircleModel, ransac)
 from scipy.signal import argrelextrema
 from scipy.spatial import cKDTree
 
-def applyCanny(ar, mask, sigma=1, thres=0.9, thresH=0.995):
+def applyCanny(ar, mask, sigma=4, thres=0.92, thresH=0.98):
     """
     use canny to find edges in image to be used in hough algorithm 
     """      
@@ -91,42 +91,45 @@ def fitCircles(x,y,r,yerr=None, guess=None):
 #
 # --------------------------------------------------------------            
 
-@jit(forceobj=True)
-def addToHough(x,y,arHough, hough_radii, center_x, center_y, wt=1):
+@jit
+def addToHough(x, y, arHough, hough_radii, center_x, center_y, wt=1):
     """
     add a single point in x-y space to hough space 
     """
-    dr=hough_radii[1]-hough_radii[0]
+    dr = hough_radii[1] - hough_radii[0]
+    r_hi = hough_radii[0] ** 2
+    r_low = hough_radii[-1] ** 2
     for icx,cx in enumerate(center_x):
-        dx = (x-cx)*(x-cx)
-        if dx < hough_radii[0]*hough_radii[0] or  dx > hough_radii[-1]*hough_radii[-1]:
+        dx = (x-cx) ** 2
+        if dx < r_hi or  dx > r_low:
             continue
         for icy,cy in enumerate(center_y):
-            dy = (y-cy)*(y-cy)
-            r = np.sqrt(dx+dy)
-            ir = int((r-hough_radii[0])/dr)
-            if ir>=0 and ir < hough_radii.shape[0]:
-                arHough[ir, icx, icy]+=wt
+            dy = (y-cy) ** 2
+            r = (dx+dy) ** 0.5
+            ir = int((r - hough_radii[0]) / dr)
+            if ir >= 0 and ir < hough_radii.shape[0]:
+                arHough[ir, icx, icy] += wt
 #do this to force compilation
 _ = addToHough(0,0,np.zeros([2,2,2]),np.arange(2), np.arange(2), np.arange(2))
 
-@jit(forceobj=True)
-def transformImage(arSparse,arHough, hough_radii, center_x, center_y):
+@jit
+def transformImage(zip_obj, arHough, hough_radii, center_x, center_y):
     """
     transform a sparsified imaged to an array in hough space
     """
-    assert arHough.shape[0]==hough_radii.shape[0]
-    assert arHough.shape[1]==center_x.shape[0]
-    assert arHough.shape[2]==center_y.shape[0]
-    for trow,tcol,tdat in itertools.izip(arSparse.row, arSparse.col,arSparse.data):
-        addToHough(trow,tcol, arHough,  hough_radii, center_x, center_y, tdat)
+    assert arHough.shape[0] == hough_radii.shape[0]
+    assert arHough.shape[1] == center_x.shape[0]
+    assert arHough.shape[2] == center_y.shape[0]
+    for trow, tcol, tdat in zip_obj:
+        addToHough(trow, tcol, arHough,  hough_radii, center_x, center_y, tdat)
 #do this to force compilation
 _img = np.zeros((10, 10), dtype=np.uint8)
 _arHough = np.zeros((10, 10, 10), dtype=np.uint8)
 _rr, _cc = circle_perimeter(4, 4, 3)
 _img[_rr, _cc] = 1
 _imgSparse = sparse.coo_matrix(_img)
-transformImage(_imgSparse,_arHough, np.arange(10), np.arange(10), np.arange(10))
+_zip_obj = zip(_imgSparse.row, _imgSparse.col, _imgSparse.data)
+transformImage(_zip_obj, _arHough, np.arange(10), np.arange(10), np.arange(10))
 
 def findCenter(arSparse, rBound, xcenBound, ycenBound, nbin=100, retHoughArray=False, nBinR=None):
     """
@@ -147,11 +150,13 @@ def findCenter(arSparse, rBound, xcenBound, ycenBound, nbin=100, retHoughArray=F
     centerx = np.arange(xcenBound[0],xcenBound[1],(xcenBound[1]-xcenBound[0])/nbin)
     centery = np.arange(ycenBound[0],ycenBound[1],(ycenBound[1]-ycenBound[0])/nbin)
     arHough = np.zeros([radii.shape[0], centerx.shape[0], centery.shape[0]])
-    transformImage(arSparse, arHough, radii, centerx, centery)
+    zip_obj = zip(arSparse.row, arSparse.col, arSparse.data)
+    transformImage(zip_obj, arHough, radii, centerx, centery)
     maxdim0 = [ arHough[i,:,:].max() for i in range(arHough.shape[0])]
     maxdim1 = [ arHough[:,i,:].max() for i in range(arHough.shape[1])]
     maxdim2 = [ arHough[:,:,i].max() for i in range(arHough.shape[2])]
     fitRes={}
+    print( 'get max ', centerx, centery)
     fitRes['R'] = radii[np.array(maxdim0).argmax()]
     fitRes['xCen'] = centerx[np.array(maxdim1).argmax()]
     fitRes['yCen'] = centery[np.array(maxdim2).argmax()]
@@ -164,6 +169,7 @@ def findCenter(arSparse, rBound, xcenBound, ycenBound, nbin=100, retHoughArray=F
         fitRes['houghArray_projR'] = maxdim0
         fitRes['houghArray_projX'] = maxdim1
         fitRes['houghArray_projY'] = maxdim2
+
     return fitRes
 
 def iterateCenter(arSparse, ar_shape, rRange, nbin=100, prec=1, redFac=5., retHoughArray=False, printProgress=False, overfillFactor=1, nBinR=None):
@@ -192,6 +198,7 @@ def iterateCenter(arSparse, ar_shape, rRange, nbin=100, prec=1, redFac=5., retHo
         fitRes = findCenter(arSparse, rRange, xRange, yRange, nbin=nbin, retHoughArray=retHoughArray, nBinR=nBinR)
         if printProgress:
             print('found center: ',maxX, maxY, maxR)
+        maxR = fitRes['R']
 
     temp = fitRes['xCen']
     fitRes['xCen'] = fitRes['yCen']
@@ -327,9 +334,9 @@ def FindFitCenter(image, mask, inParams={}):
 
     #parameters found to be typcially right
     #parameters for canny
-    params={'sigma':1}      
-    params['low_threshold']=0.95  
-    params['high_threshold']=0.995
+    params={'sigma':4}      
+    params['low_threshold']=0.92  
+    params['high_threshold']=0.98
     #parameters for hough center finding
     params['precision']=1  
     params['nBinR']=280    
@@ -350,7 +357,7 @@ def FindFitCenter(image, mask, inParams={}):
             print('fit parameters do not have key ',inkey,', available are: ',params.keys())
             pass
 
-    print('now find edges, because')
+    print('now find edges')
     arThres,arSparse = applyCanny(ar, mask.astype(bool), sigma=params['sigma'], thres=params['low_threshold'], thresH=params['high_threshold'])
 
     print('use hough transform to find center & ring candidates')
